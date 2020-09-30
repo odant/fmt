@@ -20,20 +20,28 @@
 **{fmt}** is an open-source formatting library for C++.
 It can be used as a safe and fast alternative to (s)printf and iostreams.
 
+If you like this project, please consider donating to BYSOL,
+an initiative to help victims of political repressions in Belarus:
+https://www.facebook.com/donate/759400044849707/108388587646909/.
+
 `Documentation <https://fmt.dev>`__
 
 Q&A: ask questions on `StackOverflow with the tag fmt
 <https://stackoverflow.com/questions/tagged/fmt>`_.
 
+Try {fmt} in `Compiler Explorer <https://godbolt.org/z/Eq5763>`_.
+
 Features
 --------
 
-* Simple `format API <https://fmt.dev/dev/api.html>`_ with positional arguments
+* Simple `format API <https://fmt.dev/latest/api.html>`_ with positional arguments
   for localization
 * Implementation of `C++20 std::format
   <https://en.cppreference.com/w/cpp/utility/format>`__
-* `Format string syntax <https://fmt.dev/dev/syntax.html>`_ similar to Python's
+* `Format string syntax <https://fmt.dev/latest/syntax.html>`_ similar to Python's
   `format <https://docs.python.org/3/library/stdtypes.html#str.format>`_
+* Fast IEEE 754 floating-point formatter with correct rounding, shortness and
+  round-trip guarantees.
 * Safe `printf implementation
   <https://fmt.dev/latest/api.html#printf-formatting>`_ including the POSIX
   extension for positional arguments
@@ -46,8 +54,10 @@ Features
 * Small code size both in terms of source code with the minimum configuration
   consisting of just three files, ``core.h``, ``format.h`` and ``format-inl.h``,
   and compiled code; see `Compile time and code bloat`_
-* Reliability: the library has an extensive set of `unit tests
-  <https://github.com/fmtlib/fmt/tree/master/test>`_ and is continuously fuzzed
+* Reliability: the library has an extensive set of `tests
+  <https://github.com/fmtlib/fmt/tree/master/test>`_ and is `continuously fuzzed
+  <https://bugs.chromium.org/p/oss-fuzz/issues/list?colspec=ID%20Type%20
+  Component%20Status%20Proj%20Reported%20Owner%20Summary&q=proj%3Dlibfmt&can=1>`_
 * Safety: the library is fully type safe, errors in format strings can be
   reported at compile time, automatic memory management prevents buffer overflow
   errors
@@ -66,7 +76,7 @@ See the `documentation <https://fmt.dev>`_ for more details.
 Examples
 --------
 
-Print ``Hello, world!`` to ``stdout``:
+**Print to stdout** (`run <https://godbolt.org/z/Tevcjh>`_)
 
 .. code:: c++
 
@@ -76,21 +86,21 @@ Print ``Hello, world!`` to ``stdout``:
       fmt::print("Hello, world!\n");
     }
 
-Format a string:
+**Format a string** (`run <https://godbolt.org/z/oK8h33>`_)
 
 .. code:: c++
 
     std::string s = fmt::format("The answer is {}.", 42);
     // s == "The answer is 42."
 
-Format a string using positional arguments:
+**Format a string using positional arguments** (`run <https://godbolt.org/z/Yn7Txe>`_)
 
 .. code:: c++
 
     std::string s = fmt::format("I'd rather be {1} than {0}.", "right", "happy");
     // s == "I'd rather be happy than right."
 
-Print chrono durations:
+**Print chrono durations** (`run <https://godbolt.org/z/K8s4Mc>`_)
 
 .. code:: c++
 
@@ -107,7 +117,7 @@ Output::
     Default format: 42s 100ms
     strftime-like format: 03:15:30
 
-Print a container:
+**Print a container** (`run <https://godbolt.org/z/MjsY7c>`_)
 
 .. code:: c++
 
@@ -123,7 +133,7 @@ Output::
 
     {1, 2, 3}
 
-Check a format string at compile time:
+**Check a format string at compile time**
 
 .. code:: c++
 
@@ -132,7 +142,7 @@ Check a format string at compile time:
 This gives a compile-time error because ``d`` is an invalid format specifier for
 a string.
 
-Write a file from a single thread:
+**Write a file from a single thread**
 
 .. code:: c++
 
@@ -143,30 +153,28 @@ Write a file from a single thread:
       out.print("Don't {}", "Panic");
     }
 
-This is up to 6x faster than using ``fprintf``.
+This can be `5 to 9 times faster than fprintf
+<http://www.zverovich.net/2020/08/04/optimal-file-buffer-size.html>`_.
 
-Create your own functions similar to `format
-<https://fmt.dev/latest/api.html#format>`_ and
-`print <https://fmt.dev/latest/api.html#print>`_
-which take arbitrary arguments (`godbolt <https://godbolt.org/g/MHjHVf>`_):
+**Print with colors and text styles**
 
 .. code:: c++
 
-    // Prints formatted error message.
-    void vreport_error(const char* format, fmt::format_args args) {
-      fmt::print("Error: ");
-      fmt::vprint(format, args);
-    }
-    template <typename... Args>
-    void report_error(const char* format, const Args & ... args) {
-      vreport_error(format, fmt::make_format_args(args...));
+    #include <fmt/color.h>
+
+    int main() {
+      fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold,
+                 "Hello, {}!\n", "world");
+      fmt::print(fg(fmt::color::floral_white) | bg(fmt::color::slate_gray) |
+                 fmt::emphasis::underline, "Hello, {}!\n", "мир");
+      fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
+                 "Hello, {}!\n", "世界");
     }
 
-    report_error("file not found: {}", path);
+Output on a modern terminal:
 
-Note that ``vreport_error`` is not parameterized on argument types which can
-improve compile times and reduce code size compared to a fully parameterized
-version.
+.. image:: https://user-images.githubusercontent.com/
+           576385/88485597-d312f600-cf2b-11ea-9cbe-61f535a86e28.png
 
 Benchmarks
 ----------
@@ -343,6 +351,11 @@ Projects using this library
 
 * `quasardb <https://www.quasardb.net/>`_: A distributed, high-performance,
   associative database
+  
+* `Quill <https://github.com/odygrd/quill>`_: Asynchronous low-latency logging library
+
+* `QKW <https://github.com/ravijanjam/qkw>`_: Generalizing aliasing to simplify
+  navigation, and executing complex multi-line terminal command sequences
 
 * `readpe <https://bitbucket.org/sys_dev/readpe>`_: Read Portable Executable
 

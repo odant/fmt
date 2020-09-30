@@ -19,7 +19,10 @@
 #include "gtest-extra.h"
 #include "util.h"
 
-#undef max
+#ifdef _WIN32
+#  include <windows.h>
+#  undef max
+#endif
 
 using fmt::detail::bigint;
 using fmt::detail::fp;
@@ -186,29 +189,6 @@ template <bool is_iec559> void run_double_tests() {
 template <> void run_double_tests<true>() {
   // Construct from double.
   EXPECT_EQ(fp(1.23), fp(0x13ae147ae147aeu, -52));
-
-  // Compute boundaries:
-  fp value;
-  // Normalized & not power of 2 - equidistant boundaries:
-  auto b = value.assign_with_boundaries(1.23);
-  EXPECT_EQ(value, fp(0x0013ae147ae147ae, -52));
-  EXPECT_EQ(b.lower, 0x9d70a3d70a3d6c00);
-  EXPECT_EQ(b.upper, 0x9d70a3d70a3d7400);
-  // Normalized power of 2 - lower boundary is closer:
-  b = value.assign_with_boundaries(1.9807040628566084e+28);  // 2**94
-  EXPECT_EQ(value, fp(0x0010000000000000, 42));
-  EXPECT_EQ(b.lower, 0x7ffffffffffffe00);
-  EXPECT_EQ(b.upper, 0x8000000000000400);
-  // Smallest normalized double - equidistant boundaries:
-  b = value.assign_with_boundaries(2.2250738585072014e-308);
-  EXPECT_EQ(value, fp(0x0010000000000000, -1074));
-  EXPECT_EQ(b.lower, 0x7ffffffffffffc00);
-  EXPECT_EQ(b.upper, 0x8000000000000400);
-  // Subnormal - equidistant boundaries:
-  b = value.assign_with_boundaries(4.9406564584124654e-324);
-  EXPECT_EQ(value, fp(0x0000000000000001, -1074));
-  EXPECT_EQ(b.lower, 0x4000000000000000);
-  EXPECT_EQ(b.upper, 0xc000000000000000);
 }
 
 TEST(FPTest, DoubleTests) {
@@ -220,33 +200,6 @@ TEST(FPTest, Normalize) {
   auto normalized = normalize(v);
   EXPECT_EQ(0xbeef000000000000, normalized.f);
   EXPECT_EQ(-6, normalized.e);
-}
-
-TEST(FPTest, ComputeFloatBoundaries) {
-  struct {
-    double x, lower, upper;
-  } tests[] = {
-      // regular
-      {1.5f, 1.4999999403953552, 1.5000000596046448},
-      // boundary
-      {1.0f, 0.9999999701976776, 1.0000000596046448},
-      // min normal
-      {1.1754944e-38f, 1.1754942807573643e-38, 1.1754944208872107e-38},
-      // max subnormal
-      {1.1754942e-38f, 1.1754941406275179e-38, 1.1754942807573643e-38},
-      // min subnormal
-      {1e-45f, 7.006492321624085e-46, 2.1019476964872256e-45},
-  };
-  for (auto test : tests) {
-    fp vlower = normalize(fp(test.lower));
-    fp vupper = normalize(fp(test.upper));
-    vlower.f >>= vupper.e - vlower.e;
-    vlower.e = vupper.e;
-    fp value;
-    auto b = value.assign_float_with_boundaries(test.x);
-    EXPECT_EQ(vlower.f, b.lower);
-    EXPECT_EQ(vupper.f, b.upper);
-  }
 }
 
 TEST(FPTest, Multiply) {
@@ -268,6 +221,19 @@ TEST(FPTest, GetCachedPower) {
     EXPECT_LE(fp.e, exp + dec_exp_step * log2(10));
     EXPECT_DOUBLE_EQ(pow(10, dec_exp), ldexp(static_cast<double>(fp.f), fp.e));
   }
+}
+
+TEST(FPTest, DragonboxMaxK) {
+  using fmt::detail::dragonbox::floor_log10_pow2;
+  using float_info = fmt::detail::dragonbox::float_info<float>;
+  EXPECT_EQ(fmt::detail::const_check(float_info::max_k),
+            float_info::kappa - floor_log10_pow2(float_info::min_exponent -
+                                                 float_info::significand_bits));
+  using double_info = fmt::detail::dragonbox::float_info<double>;
+  EXPECT_EQ(
+      fmt::detail::const_check(double_info::max_k),
+      double_info::kappa - floor_log10_pow2(double_info::min_exponent -
+                                            double_info::significand_bits));
 }
 
 TEST(FPTest, GetRoundDirection) {
@@ -307,7 +273,7 @@ TEST(FPTest, FixedHandler) {
   EXPECT_THROW(handler().on_digit('0', 100, 100, 0, exp, false),
                assertion_failure);
   namespace digits = fmt::detail::digits;
-  EXPECT_EQ(handler(1).on_digit('0', 100, 10, 10, exp, false), digits::done);
+  EXPECT_EQ(handler(1).on_digit('0', 100, 10, 10, exp, false), digits::error);
   // Check that divisor - error doesn't overflow.
   EXPECT_EQ(handler(1).on_digit('0', 100, 10, 101, exp, false), digits::error);
   // Check that 2 * error doesn't overflow.
@@ -347,14 +313,6 @@ TEST(FormatTest, ArgConverter) {
       fmt::detail::arg_converter<long long, fmt::format_context>(arg, 'd'),
       arg);
   EXPECT_EQ(value, fmt::visit_format_arg(value_extractor<long long>(), arg));
-}
-
-TEST(FormatTest, FormatNegativeNaN) {
-  double nan = std::numeric_limits<double>::quiet_NaN();
-  if (std::signbit(-nan))
-    EXPECT_EQ("-nan", fmt::format("{}", -nan));
-  else
-    fmt::print("Warning: compiler doesn't handle negative NaN correctly");
 }
 
 TEST(FormatTest, StrError) {
@@ -454,3 +412,10 @@ TEST(UtilTest, WriteFallbackUIntPtr) {
       fmt::detail::fallback_uintptr(reinterpret_cast<void*>(0xface)), nullptr);
   EXPECT_EQ(s, "0xface");
 }
+
+#ifdef _WIN32
+TEST(UtilTest, WriteConsoleSignature) {
+  decltype(WriteConsoleW)* p = fmt::detail::WriteConsoleW;
+  (void)p;
+}
+#endif

@@ -24,7 +24,6 @@
 // Check if fmt/format.h compiles with the X11 index macro defined.
 #define index(x, y) no nice things
 
-#include "fmt/color.h"
 #include "fmt/format.h"
 
 #undef index
@@ -147,6 +146,7 @@ TEST(IteratorTest, CountingIterator) {
   auto prev = it++;
   EXPECT_EQ(prev.count(), 0);
   EXPECT_EQ(it.count(), 1);
+  EXPECT_EQ((it + 41).count(), 42);
 }
 
 TEST(IteratorTest, TruncatingIterator) {
@@ -236,7 +236,7 @@ TEST(MemoryBufferTest, MoveCtorInlineBuffer) {
   std::allocator<char> alloc;
   basic_memory_buffer<char, 5, TestAllocator> buffer((TestAllocator(&alloc)));
   const char test[] = "test";
-  buffer.append(test, test + 4);
+  buffer.append(string_view(test, 4));
   check_move_buffer("test", buffer);
   // Adding one more character fills the inline buffer, but doesn't cause
   // dynamic allocation.
@@ -543,7 +543,6 @@ TEST(FormatterTest, ManyArgs) {
 TEST(FormatterTest, NamedArg) {
   EXPECT_EQ("1/a/A", format("{_1}/{a_}/{A_}", fmt::arg("a_", 'a'),
                             fmt::arg("A_", "A"), fmt::arg("_1", 1)));
-  EXPECT_THROW_MSG(format("{a}"), format_error, "argument not found");
   EXPECT_EQ(" -42", format("{0:{width}}", -42, fmt::arg("width", 4)));
   EXPECT_EQ("st", format("{0:.{precision}}", "str", fmt::arg("precision", 2)));
   EXPECT_EQ("1 2", format("{} {two}", 1, fmt::arg("two", 2)));
@@ -553,6 +552,8 @@ TEST(FormatterTest, NamedArg) {
                          fmt::arg("i", 0), fmt::arg("j", 0), fmt::arg("k", 0),
                          fmt::arg("l", 0), fmt::arg("m", 0), fmt::arg("n", 0),
                          fmt::arg("o", 0), fmt::arg("p", 0)));
+  EXPECT_THROW_MSG(format("{a}"), format_error, "argument not found");
+  EXPECT_THROW_MSG(format("{a}", 42), format_error, "argument not found");
 }
 
 TEST(FormatterTest, AutoArgIndex) {
@@ -581,8 +582,8 @@ TEST(FormatterTest, LeftAlign) {
   EXPECT_EQ("42   ", format("{0:<5}", 42ul));
   EXPECT_EQ("-42  ", format("{0:<5}", -42ll));
   EXPECT_EQ("42   ", format("{0:<5}", 42ull));
-  EXPECT_EQ("-42.0  ", format("{0:<7}", -42.0));
-  EXPECT_EQ("-42.0  ", format("{0:<7}", -42.0l));
+  EXPECT_EQ("-42  ", format("{0:<5}", -42.0));
+  EXPECT_EQ("-42  ", format("{0:<5}", -42.0l));
   EXPECT_EQ("c    ", format("{0:<5}", 'c'));
   EXPECT_EQ("abc  ", format("{0:<5}", "abc"));
   EXPECT_EQ("0xface  ", format("{0:<8}", reinterpret_cast<void*>(0xface)));
@@ -598,8 +599,8 @@ TEST(FormatterTest, RightAlign) {
   EXPECT_EQ("   42", format("{0:>5}", 42ul));
   EXPECT_EQ("  -42", format("{0:>5}", -42ll));
   EXPECT_EQ("   42", format("{0:>5}", 42ull));
-  EXPECT_EQ("  -42.0", format("{0:>7}", -42.0));
-  EXPECT_EQ("  -42.0", format("{0:>7}", -42.0l));
+  EXPECT_EQ("  -42", format("{0:>5}", -42.0));
+  EXPECT_EQ("  -42", format("{0:>5}", -42.0l));
   EXPECT_EQ("    c", format("{0:>5}", 'c'));
   EXPECT_EQ("  abc", format("{0:>5}", "abc"));
   EXPECT_EQ("  0xface", format("{0:>8}", reinterpret_cast<void*>(0xface)));
@@ -619,8 +620,8 @@ TEST(FormatterTest, CenterAlign) {
   EXPECT_EQ(" 42  ", format("{0:^5}", 42ul));
   EXPECT_EQ(" -42 ", format("{0:^5}", -42ll));
   EXPECT_EQ(" 42  ", format("{0:^5}", 42ull));
-  EXPECT_EQ(" -42.0 ", format("{0:^7}", -42.0));
-  EXPECT_EQ(" -42.0 ", format("{0:^7}", -42.0l));
+  EXPECT_EQ(" -42 ", format("{0:^5}", -42.0));
+  EXPECT_EQ(" -42 ", format("{0:^5}", -42.0l));
   EXPECT_EQ("  c  ", format("{0:^5}", 'c'));
   EXPECT_EQ(" abc  ", format("{0:^6}", "abc"));
   EXPECT_EQ(" 0xface ", format("{0:^8}", reinterpret_cast<void*>(0xface)));
@@ -638,8 +639,8 @@ TEST(FormatterTest, Fill) {
   EXPECT_EQ("***42", format("{0:*>5}", 42ul));
   EXPECT_EQ("**-42", format("{0:*>5}", -42ll));
   EXPECT_EQ("***42", format("{0:*>5}", 42ull));
-  EXPECT_EQ("**-42.0", format("{0:*>7}", -42.0));
-  EXPECT_EQ("**-42.0", format("{0:*>7}", -42.0l));
+  EXPECT_EQ("**-42", format("{0:*>5}", -42.0));
+  EXPECT_EQ("**-42", format("{0:*>5}", -42.0l));
   EXPECT_EQ("c****", format("{0:*<5}", 'c'));
   EXPECT_EQ("abc**", format("{0:*<5}", "abc"));
   EXPECT_EQ("**0xface", format("{0:*>8}", reinterpret_cast<void*>(0xface)));
@@ -662,8 +663,8 @@ TEST(FormatterTest, PlusSign) {
   EXPECT_EQ("+42", format("{0:+}", 42ll));
   EXPECT_THROW_MSG(format("{0:+}", 42ull), format_error,
                    "format specifier requires signed argument");
-  EXPECT_EQ("+42.0", format("{0:+}", 42.0));
-  EXPECT_EQ("+42.0", format("{0:+}", 42.0l));
+  EXPECT_EQ("+42", format("{0:+}", 42.0));
+  EXPECT_EQ("+42", format("{0:+}", 42.0l));
   EXPECT_THROW_MSG(format("{0:+", 'c'), format_error,
                    "missing '}' in format string");
   EXPECT_THROW_MSG(format("{0:+}", 'c'), format_error,
@@ -686,8 +687,8 @@ TEST(FormatterTest, MinusSign) {
   EXPECT_EQ("42", format("{0:-}", 42ll));
   EXPECT_THROW_MSG(format("{0:-}", 42ull), format_error,
                    "format specifier requires signed argument");
-  EXPECT_EQ("42.0", format("{0:-}", 42.0));
-  EXPECT_EQ("42.0", format("{0:-}", 42.0l));
+  EXPECT_EQ("42", format("{0:-}", 42.0));
+  EXPECT_EQ("42", format("{0:-}", 42.0l));
   EXPECT_THROW_MSG(format("{0:-", 'c'), format_error,
                    "missing '}' in format string");
   EXPECT_THROW_MSG(format("{0:-}", 'c'), format_error,
@@ -710,8 +711,8 @@ TEST(FormatterTest, SpaceSign) {
   EXPECT_EQ(" 42", format("{0: }", 42ll));
   EXPECT_THROW_MSG(format("{0: }", 42ull), format_error,
                    "format specifier requires signed argument");
-  EXPECT_EQ(" 42.0", format("{0: }", 42.0));
-  EXPECT_EQ(" 42.0", format("{0: }", 42.0l));
+  EXPECT_EQ(" 42", format("{0: }", 42.0));
+  EXPECT_EQ(" 42", format("{0: }", 42.0l));
   EXPECT_THROW_MSG(format("{0: ", 'c'), format_error,
                    "missing '}' in format string");
   EXPECT_THROW_MSG(format("{0: }", 'c'), format_error,
@@ -760,8 +761,8 @@ TEST(FormatterTest, HashFlag) {
   EXPECT_EQ("-42.0", format("{0:#}", -42.0l));
   EXPECT_EQ("4.e+01", format("{:#.0e}", 42.0));
   EXPECT_EQ("0.", format("{:#.0f}", 0.01));
-  auto s = format("{:#.0f}", 0.5);  // MSVC's printf uses wrong rounding mode.
-  EXPECT_TRUE(s == "0." || s == "1.");
+  EXPECT_EQ("0.50", format("{:#.2g}", 0.5));
+  EXPECT_EQ("0.", format("{:#.0f}", 0.5));
   EXPECT_THROW_MSG(format("{0:#", 'c'), format_error,
                    "missing '}' in format string");
   EXPECT_THROW_MSG(format("{0:#}", 'c'), format_error,
@@ -780,8 +781,8 @@ TEST(FormatterTest, ZeroFlag) {
   EXPECT_EQ("00042", format("{0:05}", 42ul));
   EXPECT_EQ("-0042", format("{0:05}", -42ll));
   EXPECT_EQ("00042", format("{0:05}", 42ull));
-  EXPECT_EQ("-0042.0", format("{0:07}", -42.0));
-  EXPECT_EQ("-0042.0", format("{0:07}", -42.0l));
+  EXPECT_EQ("-000042", format("{0:07}", -42.0));
+  EXPECT_EQ("-000042", format("{0:07}", -42.0l));
   EXPECT_THROW_MSG(format("{0:0", 'c'), format_error,
                    "missing '}' in format string");
   EXPECT_THROW_MSG(format("{0:05}", 'c'), format_error,
@@ -954,6 +955,8 @@ TEST(FormatterTest, Precision) {
   EXPECT_EQ("123.", format("{:#.0f}", 123.0));
   EXPECT_EQ("1.23", format("{:.02f}", 1.234));
   EXPECT_EQ("0.001", format("{:.1g}", 0.001));
+  EXPECT_EQ("1019666400", format("{}", 1019666432.0f));
+  EXPECT_EQ("1e+01", format("{:.0e}", 9.5));
 
   EXPECT_THROW_MSG(format("{0:.2}", reinterpret_cast<void*>(0xcafe)),
                    format_error,
@@ -1235,17 +1238,20 @@ TEST(FormatterTest, FormatConvertibleToLongLong) {
 }
 
 TEST(FormatterTest, FormatFloat) {
+  EXPECT_EQ("0", format("{}", 0.0f));
   EXPECT_EQ("392.500000", format("{0:f}", 392.5f));
 }
 
 TEST(FormatterTest, FormatDouble) {
+  EXPECT_EQ("0", format("{}", 0.0));
   check_unknown_types(1.2, "eEfFgGaAnL%", "double");
-  EXPECT_EQ("0.0", format("{:}", 0.0));
+  EXPECT_EQ("0", format("{:}", 0.0));
   EXPECT_EQ("0.000000", format("{:f}", 0.0));
   EXPECT_EQ("0", format("{:g}", 0.0));
   EXPECT_EQ("392.65", format("{:}", 392.65));
   EXPECT_EQ("392.65", format("{:g}", 392.65));
   EXPECT_EQ("392.65", format("{:G}", 392.65));
+  EXPECT_EQ("4.9014e+06", format("{:g}", 4.9014e6));
   EXPECT_EQ("392.650000", format("{:f}", 392.65));
   EXPECT_EQ("392.650000", format("{:F}", 392.65));
   EXPECT_EQ("42", format("{:L}", 42.0));
@@ -1272,17 +1278,40 @@ TEST(FormatterTest, PrecisionRounding) {
   EXPECT_EQ("1.000", format("{:.3f}", 0.9999));
   EXPECT_EQ("0.00123", format("{:.3}", 0.00123));
   EXPECT_EQ("0.1", format("{:.16g}", 0.1));
-  // Trigger rounding error in Grisu by a carefully chosen number.
-  auto n = 3788512123356.985352;
-  char buffer[64];
-  safe_sprintf(buffer, "%f", n);
-  EXPECT_EQ(buffer, format("{:f}", n));
+  EXPECT_EQ("1", fmt::format("{:.0}", 1.0));
+  EXPECT_EQ("225.51575035152063720",
+            fmt::format("{:.17f}", 225.51575035152064));
+  EXPECT_EQ("-761519619559038.2", fmt::format("{:.1f}", -761519619559038.2));
+  EXPECT_EQ("1.9156918820264798e-56",
+            fmt::format("{}", 1.9156918820264798e-56));
+  EXPECT_EQ("0.0000", fmt::format("{:.4f}", 7.2809479766055470e-15));
+
+  // Trigger a rounding error in Grisu by a specially chosen number.
+  EXPECT_EQ("3788512123356.985352", format("{:f}", 3788512123356.985352));
+}
+
+TEST(FormatterTest, PrettifyFloat) {
+  EXPECT_EQ("0.0001", fmt::format("{}", 1e-4));
+  EXPECT_EQ("1e-05", fmt::format("{}", 1e-5));
+  EXPECT_EQ("9.999e-05", fmt::format("{}", 9.999e-5));
+  EXPECT_EQ("10000000000", fmt::format("{}", 1e10));
+  EXPECT_EQ("100000000000", fmt::format("{}", 1e11));
+  EXPECT_EQ("12340000000", fmt::format("{}", 1234e7));
+  EXPECT_EQ("12.34", fmt::format("{}", 1234e-2));
+  EXPECT_EQ("0.001234", fmt::format("{}", 1234e-6));
+  EXPECT_EQ("0.1", fmt::format("{}", 0.1f));
+  EXPECT_EQ("0.10000000149011612", fmt::format("{}", double(0.1f)));
+  EXPECT_EQ("1.3563156e-19", fmt::format("{}", 1.35631564e-19f));
 }
 
 TEST(FormatterTest, FormatNaN) {
   double nan = std::numeric_limits<double>::quiet_NaN();
   EXPECT_EQ("nan", format("{}", nan));
   EXPECT_EQ("+nan", format("{:+}", nan));
+  if (std::signbit(-nan))
+    EXPECT_EQ("-nan", format("{}", -nan));
+  else
+    fmt::print("Warning: compiler doesn't handle negative NaN correctly");
   EXPECT_EQ(" nan", format("{: }", nan));
   EXPECT_EQ("NAN", format("{:F}", nan));
   EXPECT_EQ("nan    ", format("{:<7}", nan));
@@ -1303,7 +1332,7 @@ TEST(FormatterTest, FormatInfinity) {
 }
 
 TEST(FormatterTest, FormatLongDouble) {
-  EXPECT_EQ("0.0", format("{0:}", 0.0l));
+  EXPECT_EQ("0", format("{0:}", 0.0l));
   EXPECT_EQ("0.000000", format("{0:f}", 0.0l));
   EXPECT_EQ("392.65", format("{0:}", 392.65l));
   EXPECT_EQ("392.65", format("{0:g}", 392.65l));
@@ -1520,6 +1549,7 @@ TEST(FormatterTest, WideFormatString) {
   EXPECT_EQ(L"4.2", format(L"{}", 4.2));
   EXPECT_EQ(L"abc", format(L"{}", L"abc"));
   EXPECT_EQ(L"z", format(L"{}", L'z'));
+  EXPECT_THROW(fmt::format(L"{:*\x343E}", 42), fmt::format_error);
 }
 
 TEST(FormatterTest, FormatStringFromSpeedTest) {
@@ -1826,14 +1856,18 @@ class mock_arg_formatter
   }
 
   template <typename T>
-  typename std::enable_if<fmt::detail::is_integral<T>::value, iterator>::type
+  typename std::enable_if<fmt::detail::is_integral<T>::value &&
+                              fmt::detail::is_signed<T>::value,
+                          iterator>::type
   operator()(T value) {
     call(value);
     return base::operator()(value);
   }
 
   template <typename T>
-  typename std::enable_if<!fmt::detail::is_integral<T>::value, iterator>::type
+  typename std::enable_if<!(fmt::detail::is_integral<T>::value &&
+                            fmt::detail::is_signed<T>::value),
+                          iterator>::type
   operator()(T value) {
     return base::operator()(value);
   }
@@ -1943,6 +1977,12 @@ TEST(FormatTest, OutputIterators) {
 
 TEST(FormatTest, FormattedSize) {
   EXPECT_EQ(2u, fmt::formatted_size("{}", 42));
+}
+
+TEST(FormatTest, FormatTo) {
+  std::vector<char> v;
+  fmt::format_to(std::back_inserter(v), "{}", "foo");
+  EXPECT_EQ(string_view(v.data(), v.size()), "foo");
 }
 
 TEST(FormatTest, FormatToN) {
@@ -2411,12 +2451,6 @@ TEST(FormatTest, FmtStringInTemplate) {
 
 #endif  // FMT_USE_CONSTEXPR
 
-TEST(FormatTest, EmphasisNonHeaderOnly) {
-  // Ensure this compiles even if FMT_HEADER_ONLY is not defined.
-  EXPECT_EQ(fmt::format(fmt::emphasis::bold, "bold error"),
-            "\x1b[1mbold error\x1b[0m");
-}
-
 TEST(FormatTest, CharTraitsIsNotAmbiguous) {
   // Test that we don't inject detail names into the std namespace.
   using namespace std;
@@ -2464,4 +2498,28 @@ TEST(FormatTest, FormatUTF8Precision) {
   EXPECT_EQ(fmt::detail::count_code_points(result), 4);
   EXPECT_EQ(result.size(), 5);
   EXPECT_EQ(from_u8str(result), from_u8str(str.substr(0, 5)));
+}
+
+struct check_back_appender {};
+
+FMT_BEGIN_NAMESPACE
+template <> struct formatter<check_back_appender> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {
+    return ctx.begin();
+  }
+
+  template <typename Context>
+  auto format(check_back_appender, Context& ctx) -> decltype(ctx.out()) {
+    auto out = ctx.out();
+    static_assert(std::is_same<decltype(++out), decltype(out)&>::value,
+                  "needs to satisfy weakly_incrementable");
+    *out = 'y';
+    return ++out;
+  }
+};
+FMT_END_NAMESPACE
+
+TEST(FormatTest, BackInsertSlicing) {
+  EXPECT_EQ(fmt::format("{}", check_back_appender{}), "y");
 }

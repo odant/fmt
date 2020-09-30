@@ -70,9 +70,11 @@
 #endif
 
 #if __cplusplus == 201103L || __cplusplus == 201402L
-#  if defined(__clang__)
+#  if defined(__INTEL_COMPILER) || defined(__PGI)
+#    define FMT_FALLTHROUGH
+#  elif defined(__clang__)
 #    define FMT_FALLTHROUGH [[clang::fallthrough]]
-#  elif FMT_GCC_VERSION >= 700 && !defined(__PGI) && \
+#  elif FMT_GCC_VERSION >= 700 && \
       (!defined(__EDG_VERSION__) || __EDG_VERSION__ >= 520)
 #    define FMT_FALLTHROUGH [[gnu::fallthrough]]
 #  else
@@ -139,12 +141,13 @@ FMT_END_NAMESPACE
 #endif
 
 #ifndef FMT_USE_UDL_TEMPLATE
-// EDG frontend based compilers (icc, nvcc, etc) and GCC < 6.4 do not properly
-// support UDL templates and GCC >= 9 warns about them.
+// EDG frontend based compilers (icc, nvcc, PGI, etc) and GCC < 6.4 do not
+// properly support UDL templates and GCC >= 9 warns about them.
 #  if FMT_USE_USER_DEFINED_LITERALS &&                         \
       (!defined(__EDG_VERSION__) || __EDG_VERSION__ >= 501) && \
       ((FMT_GCC_VERSION >= 604 && __cplusplus >= 201402L) ||   \
-       FMT_CLANG_VERSION >= 304)
+       FMT_CLANG_VERSION >= 304) &&                            \
+      !defined(__PGI) && !defined(__NVCC__)
 #    define FMT_USE_UDL_TEMPLATE 1
 #  else
 #    define FMT_USE_UDL_TEMPLATE 0
@@ -163,6 +166,14 @@ FMT_END_NAMESPACE
 #  define FMT_USE_LONG_DOUBLE 1
 #endif
 
+// Defining FMT_REDUCE_INT_INSTANTIATIONS to 1, will reduce the number of
+// int_writer template instances to just one by only using the largest integer
+// type. This results in a reduction in binary size but will cause a decrease in
+// integer formatting performance.
+#if !defined(FMT_REDUCE_INT_INSTANTIATIONS)
+#  define FMT_REDUCE_INT_INSTANTIATIONS 0
+#endif
+
 // __builtin_clz is broken in clang with Microsoft CodeGen:
 // https://github.com/fmtlib/fmt/issues/519
 #if (FMT_GCC_VERSION || FMT_HAS_BUILTIN(__builtin_clz)) && !FMT_MSC_VER
@@ -171,56 +182,87 @@ FMT_END_NAMESPACE
 #if (FMT_GCC_VERSION || FMT_HAS_BUILTIN(__builtin_clzll)) && !FMT_MSC_VER
 #  define FMT_BUILTIN_CLZLL(n) __builtin_clzll(n)
 #endif
+#if (FMT_GCC_VERSION || FMT_HAS_BUILTIN(__builtin_ctz))
+#  define FMT_BUILTIN_CTZ(n) __builtin_ctz(n)
+#endif
+#if (FMT_GCC_VERSION || FMT_HAS_BUILTIN(__builtin_ctzll))
+#  define FMT_BUILTIN_CTZLL(n) __builtin_ctzll(n)
+#endif
+
+#if FMT_MSC_VER
+#  include <intrin.h>  // _BitScanReverse[64], _BitScanForward[64], _umul128
+#endif
 
 // Some compilers masquerade as both MSVC and GCC-likes or otherwise support
 // __builtin_clz and __builtin_clzll, so only define FMT_BUILTIN_CLZ using the
 // MSVC intrinsics if the clz and clzll builtins are not available.
-#if FMT_MSC_VER && !defined(FMT_BUILTIN_CLZLL) && !defined(_MANAGED)
-#  include <intrin.h>  // _BitScanReverse, _BitScanReverse64
-
+#if FMT_MSC_VER && !defined(FMT_BUILTIN_CLZLL) && \
+    !defined(FMT_BUILTIN_CTZLL) && !defined(_MANAGED)
 FMT_BEGIN_NAMESPACE
 namespace detail {
 // Avoid Clang with Microsoft CodeGen's -Wunknown-pragmas warning.
 #  ifndef __clang__
+#    pragma intrinsic(_BitScanForward)
 #    pragma intrinsic(_BitScanReverse)
 #  endif
-inline uint32_t clz(uint32_t x) {
+#  if defined(_WIN64) && !defined(__clang__)
+#    pragma intrinsic(_BitScanForward64)
+#    pragma intrinsic(_BitScanReverse64)
+#  endif
+
+inline int clz(uint32_t x) {
   unsigned long r = 0;
   _BitScanReverse(&r, x);
-
   FMT_ASSERT(x != 0, "");
   // Static analysis complains about using uninitialized data
   // "r", but the only way that can happen is if "x" is 0,
   // which the callers guarantee to not happen.
   FMT_SUPPRESS_MSC_WARNING(6102)
-  return 31 - r;
+  return 31 ^ static_cast<int>(r);
 }
 #  define FMT_BUILTIN_CLZ(n) detail::clz(n)
 
-#  if defined(_WIN64) && !defined(__clang__)
-#    pragma intrinsic(_BitScanReverse64)
-#  endif
-
-inline uint32_t clzll(uint64_t x) {
+inline int clzll(uint64_t x) {
   unsigned long r = 0;
 #  ifdef _WIN64
   _BitScanReverse64(&r, x);
 #  else
   // Scan the high 32 bits.
-  if (_BitScanReverse(&r, static_cast<uint32_t>(x >> 32))) return 63 - (r + 32);
-
+  if (_BitScanReverse(&r, static_cast<uint32_t>(x >> 32))) return 63 ^ (r + 32);
   // Scan the low 32 bits.
   _BitScanReverse(&r, static_cast<uint32_t>(x));
 #  endif
-
   FMT_ASSERT(x != 0, "");
-  // Static analysis complains about using uninitialized data
-  // "r", but the only way that can happen is if "x" is 0,
-  // which the callers guarantee to not happen.
-  FMT_SUPPRESS_MSC_WARNING(6102)
-  return 63 - r;
+  FMT_SUPPRESS_MSC_WARNING(6102)  // Suppress a bogus static analysis warning.
+  return 63 ^ static_cast<int>(r);
 }
 #  define FMT_BUILTIN_CLZLL(n) detail::clzll(n)
+
+inline int ctz(uint32_t x) {
+  unsigned long r = 0;
+  _BitScanForward(&r, x);
+  FMT_ASSERT(x != 0, "");
+  FMT_SUPPRESS_MSC_WARNING(6102)  // Suppress a bogus static analysis warning.
+  return static_cast<int>(r);
+}
+#  define FMT_BUILTIN_CTZ(n) detail::ctz(n)
+
+inline int ctzll(uint64_t x) {
+  unsigned long r = 0;
+  FMT_ASSERT(x != 0, "");
+  FMT_SUPPRESS_MSC_WARNING(6102)  // Suppress a bogus static analysis warning.
+#  ifdef _WIN64
+  _BitScanForward64(&r, x);
+#  else
+  // Scan the low 32 bits.
+  if (_BitScanForward(&r, static_cast<uint32_t>(x))) return static_cast<int>(r);
+  // Scan the high 32 bits.
+  _BitScanForward(&r, static_cast<uint32_t>(x >> 32));
+  r += 32;
+#  endif
+  return static_cast<int>(r);
+}
+#  define FMT_BUILTIN_CTZLL(n) detail::ctzll(n)
 }  // namespace detail
 FMT_END_NAMESPACE
 #endif
@@ -283,6 +325,9 @@ template <typename T> constexpr T max_value() {
 template <typename T> constexpr int num_bits() {
   return std::numeric_limits<T>::digits;
 }
+// std::numeric_limits<T>::digits may return 0 for 128-bit ints.
+template <> constexpr int num_bits<int128_t>() { return 128; }
+template <> constexpr int num_bits<uint128_t>() { return 128; }
 template <> constexpr int num_bits<fallback_uintptr>() {
   return static_cast<int>(sizeof(void*) *
                           std::numeric_limits<unsigned char>::digits);
@@ -295,49 +340,10 @@ FMT_INLINE void assume(bool condition) {
 #endif
 }
 
-// A workaround for gcc 4.8 to make void_t work in a SFINAE context.
-template <typename... Ts> struct void_t_impl { using type = void; };
-
-template <typename... Ts>
-using void_t = typename detail::void_t_impl<Ts...>::type;
-
 // An approximation of iterator_t for pre-C++20 systems.
 template <typename T>
 using iterator_t = decltype(std::begin(std::declval<T&>()));
 template <typename T> using sentinel_t = decltype(std::end(std::declval<T&>()));
-
-// Detect the iterator category of *any* given type in a SFINAE-friendly way.
-// Unfortunately, older implementations of std::iterator_traits are not safe
-// for use in a SFINAE-context.
-template <typename It, typename Enable = void>
-struct iterator_category : std::false_type {};
-
-template <typename T> struct iterator_category<T*> {
-  using type = std::random_access_iterator_tag;
-};
-
-template <typename It>
-struct iterator_category<It, void_t<typename It::iterator_category>> {
-  using type = typename It::iterator_category;
-};
-
-// Detect if *any* given type models the OutputIterator concept.
-template <typename It> class is_output_iterator {
-  // Check for mutability because all iterator categories derived from
-  // std::input_iterator_tag *may* also meet the requirements of an
-  // OutputIterator, thereby falling into the category of 'mutable iterators'
-  // [iterator.requirements.general] clause 4. The compiler reveals this
-  // property only at the point of *actually dereferencing* the iterator!
-  template <typename U>
-  static decltype(*(std::declval<U>())) test(std::input_iterator_tag);
-  template <typename U> static char& test(std::output_iterator_tag);
-  template <typename U> static const char& test(...);
-
-  using type = decltype(test<It>(typename iterator_category<It>::type{}));
-
- public:
-  enum { value = !std::is_const<remove_reference_t<type>>::value };
-};
 
 // A workaround for std::string not having mutable data() until C++17.
 template <typename Char> inline Char* get_data(std::basic_string<Char>& s) {
@@ -382,6 +388,18 @@ template <typename Iterator> inline Iterator& reserve(Iterator& it, size_t) {
   return it;
 }
 
+template <typename T, typename OutputIt>
+constexpr T* to_pointer(OutputIt, size_t) {
+  return nullptr;
+}
+template <typename T> T* to_pointer(buffer_appender<T> it, size_t n) {
+  buffer<T>& buf = get_container(it);
+  auto size = buf.size();
+  if (buf.capacity() < size + n) return nullptr;
+  buf.try_resize(size + n);
+  return buf.data() + size;
+}
+
 template <typename Container, FMT_ENABLE_IF(is_contiguous<Container>::value)>
 inline std::back_insert_iterator<Container> base_iterator(
     std::back_insert_iterator<Container>& it,
@@ -419,10 +437,14 @@ class counting_iterator {
     ++count_;
     return *this;
   }
-
   counting_iterator operator++(int) {
     auto it = *this;
     ++*this;
+    return it;
+  }
+
+  friend counting_iterator operator+(counting_iterator it, difference_type n) {
+    it.count_ += static_cast<size_t>(n);
     return it;
   }
 
@@ -559,14 +581,19 @@ OutputIt copy_str(InputIt begin, InputIt end, OutputIt it) {
                         [](char c) { return static_cast<char8_type>(c); });
 }
 
-#ifndef FMT_USE_GRISU
-#  define FMT_USE_GRISU 1
-#endif
-
-template <typename T> constexpr bool use_grisu() {
-  return FMT_USE_GRISU && std::numeric_limits<double>::is_iec559 &&
-         sizeof(T) <= sizeof(double);
+template <typename Char, typename InputIt>
+inline counting_iterator copy_str(InputIt begin, InputIt end,
+                                  counting_iterator it) {
+  return it + (end - begin);
 }
+
+template <typename T>
+using is_fast_float = bool_constant<std::numeric_limits<T>::is_iec559 &&
+                                    sizeof(T) <= sizeof(double)>;
+
+#ifndef FMT_USE_FULL_CACHE_DRAGONBOX
+#  define FMT_USE_FULL_CACHE_DRAGONBOX 0
+#endif
 
 template <typename T>
 template <typename U>
@@ -580,6 +607,12 @@ void buffer<T>::append(const U* begin, const U* end) {
     size_ += count;
     begin += count;
   } while (begin != end);
+}
+
+template <typename OutputIt, typename T, typename Traits>
+void iterator_buffer<OutputIt, T, Traits>::flush() {
+  out_ = std::copy_n(data_, this->limit(this->size()), out_);
+  this->clear();
 }
 }  // namespace detail
 
@@ -632,7 +665,7 @@ class basic_memory_buffer : public detail::buffer<T> {
   }
 
  protected:
-  void grow(size_t size) final;
+  void grow(size_t size) final FMT_OVERRIDE;
 
  public:
   using value_type = T;
@@ -695,6 +728,13 @@ class basic_memory_buffer : public detail::buffer<T> {
 
   /** Increases the buffer capacity to *new_capacity*. */
   void reserve(size_t new_capacity) { this->try_reserve(new_capacity); }
+
+  // Directly append data into the buffer
+  using detail::buffer<T>::append;
+  template <typename ContiguousRange>
+  void append(const ContiguousRange& range) {
+    append(range.data(), range.data() + range.size());
+  }
 };
 
 template <typename T, size_t SIZE, typename Allocator>
@@ -741,13 +781,18 @@ class FMT_API format_error : public std::runtime_error {
 
 namespace detail {
 
+template <typename T>
+using is_signed =
+    std::integral_constant<bool, std::numeric_limits<T>::is_signed ||
+                                     std::is_same<T, int128_t>::value>;
+
 // Returns true if value is negative, false otherwise.
 // Same as `value < 0` but doesn't produce warnings if T is an unsigned type.
-template <typename T, FMT_ENABLE_IF(std::numeric_limits<T>::is_signed)>
+template <typename T, FMT_ENABLE_IF(is_signed<T>::value)>
 FMT_CONSTEXPR bool is_negative(T value) {
   return value < 0;
 }
-template <typename T, FMT_ENABLE_IF(!std::numeric_limits<T>::is_signed)>
+template <typename T, FMT_ENABLE_IF(!is_signed<T>::value)>
 FMT_CONSTEXPR bool is_negative(T) {
   return false;
 }
@@ -760,19 +805,81 @@ FMT_CONSTEXPR bool is_supported_floating_point(T) {
 }
 
 // Smallest of uint32_t, uint64_t, uint128_t that is large enough to
-// represent all values of T.
+// represent all values of an integral type T.
 template <typename T>
-using uint32_or_64_or_128_t = conditional_t<
-    std::numeric_limits<T>::digits <= 32, uint32_t,
-    conditional_t<std::numeric_limits<T>::digits <= 64, uint64_t, uint128_t>>;
+using uint32_or_64_or_128_t =
+    conditional_t<num_bits<T>() <= 32 && !FMT_REDUCE_INT_INSTANTIATIONS,
+                  uint32_t,
+                  conditional_t<num_bits<T>() <= 64, uint64_t, uint128_t>>;
+
+// 128-bit integer type used internally
+struct FMT_EXTERN_TEMPLATE_API uint128_wrapper {
+  uint128_wrapper() = default;
+
+#if FMT_USE_INT128
+  uint128_t internal_;
+
+  uint128_wrapper(uint64_t high, uint64_t low) FMT_NOEXCEPT
+      : internal_{static_cast<uint128_t>(low) |
+                  (static_cast<uint128_t>(high) << 64)} {}
+
+  uint128_wrapper(uint128_t u) : internal_{u} {}
+
+  uint64_t high() const FMT_NOEXCEPT { return uint64_t(internal_ >> 64); }
+  uint64_t low() const FMT_NOEXCEPT { return uint64_t(internal_); }
+
+  uint128_wrapper& operator+=(uint64_t n) & FMT_NOEXCEPT {
+    internal_ += n;
+    return *this;
+  }
+#else
+  uint64_t high_;
+  uint64_t low_;
+
+  uint128_wrapper(uint64_t high, uint64_t low) FMT_NOEXCEPT : high_{high},
+                                                              low_{low} {}
+
+  uint64_t high() const FMT_NOEXCEPT { return high_; }
+  uint64_t low() const FMT_NOEXCEPT { return low_; }
+
+  uint128_wrapper& operator+=(uint64_t n) & FMT_NOEXCEPT {
+#  if defined(_MSC_VER) && defined(_M_X64)
+    unsigned char carry = _addcarry_u64(0, low_, n, &low_);
+    _addcarry_u64(carry, high_, 0, &high_);
+    return *this;
+#  else
+    uint64_t sum = low_ + n;
+    high_ += (sum < low_ ? 1 : 0);
+    low_ = sum;
+    return *this;
+#  endif
+  }
+#endif
+};
+
+// Table entry type for divisibility test used internally
+template <typename T> struct FMT_EXTERN_TEMPLATE_API divtest_table_entry {
+  T mod_inv;
+  T max_quotient;
+};
 
 // Static data is placed in this class template for the header-only config.
 template <typename T = void> struct FMT_EXTERN_TEMPLATE_API basic_data {
   static const uint64_t powers_of_10_64[];
   static const uint32_t zero_or_powers_of_10_32[];
   static const uint64_t zero_or_powers_of_10_64[];
-  static const uint64_t pow10_significands[];
-  static const int16_t pow10_exponents[];
+  static const uint64_t grisu_pow10_significands[];
+  static const int16_t grisu_pow10_exponents[];
+  static const divtest_table_entry<uint32_t> divtest_table_for_pow5_32[];
+  static const divtest_table_entry<uint64_t> divtest_table_for_pow5_64[];
+  static const uint64_t dragonbox_pow10_significands_64[];
+  static const uint128_wrapper dragonbox_pow10_significands_128[];
+  // log10(2) = 0x0.4d104d427de7fbcc...
+  static const uint64_t log10_2_significand = 0x4d104d427de7fbcc;
+#if !FMT_USE_FULL_CACHE_DRAGONBOX
+  static const uint64_t powers_of_5_64[];
+  static const uint32_t dragonbox_pow10_recovery_errors[];
+#endif
   // GCC generates slightly better code for pairs than chars.
   using digit_pair = char[2];
   static const digit_pair digits[];
@@ -786,6 +893,17 @@ template <typename T = void> struct FMT_EXTERN_TEMPLATE_API basic_data {
   static const char right_padding_shifts[5];
 };
 
+// Maps bsr(n) to ceil(log10(pow(2, bsr(n) + 1) - 1)).
+// This is a function instead of an array to workaround a bug in GCC10 (#1810).
+FMT_INLINE uint16_t bsr2log10(int bsr) {
+  static constexpr uint16_t data[] = {
+      1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  4,  5,  5,  5,
+      6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  9,  9,  9,  10, 10, 10,
+      10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 15, 15,
+      15, 16, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 19, 20};
+  return data[bsr];
+}
+
 #ifndef FMT_EXPORTED
 FMT_EXTERN template struct basic_data<void>;
 #endif
@@ -797,10 +915,9 @@ struct data : basic_data<> {};
 // Returns the number of decimal digits in n. Leading zeros are not counted
 // except for n == 0 in which case count_digits returns 1.
 inline int count_digits(uint64_t n) {
-  // Based on http://graphics.stanford.edu/~seander/bithacks.html#IntegerLog10
-  // and the benchmark https://github.com/localvoid/cxx-benchmark-count-digits.
-  int t = (64 - FMT_BUILTIN_CLZLL(n | 1)) * 1233 >> 12;
-  return t - (n < data::zero_or_powers_of_10_64[t]) + 1;
+  // https://github.com/fmtlib/format-benchmark/blob/master/digits10
+  auto t = bsr2log10(FMT_BUILTIN_CLZLL(n | 1) ^ 63);
+  return t - (n < data::zero_or_powers_of_10_64[t]);
 }
 #else
 // Fallback version of count_digits used when __builtin_clz is not available.
@@ -850,15 +967,24 @@ template <> int count_digits<4>(detail::fallback_uintptr n);
 
 #if FMT_GCC_VERSION || FMT_CLANG_VERSION
 #  define FMT_ALWAYS_INLINE inline __attribute__((always_inline))
+#elif FMT_MSC_VER
+#  define FMT_ALWAYS_INLINE __forceinline
 #else
-#  define FMT_ALWAYS_INLINE
+#  define FMT_ALWAYS_INLINE inline
+#endif
+
+// To suppress unnecessary security cookie checks
+#if FMT_MSC_VER && !FMT_CLANG_VERSION
+#  define FMT_SAFEBUFFERS __declspec(safebuffers)
+#else
+#  define FMT_SAFEBUFFERS
 #endif
 
 #ifdef FMT_BUILTIN_CLZ
 // Optional version of count_digits for better performance on 32-bit platforms.
 inline int count_digits(uint32_t n) {
-  int t = (32 - FMT_BUILTIN_CLZ(n | 1)) * 1233 >> 12;
-  return t - (n < data::zero_or_powers_of_10_32[t]) + 1;
+  auto t = bsr2log10(FMT_BUILTIN_CLZ(n | 1) ^ 31);
+  return t - (n < data::zero_or_powers_of_10_32[t]);
 }
 #endif
 
@@ -1147,7 +1273,7 @@ template <typename Char> class float_writer {
       // 1234e7 -> 12340000000[.0+]
       it = copy_str<Char>(digits_, digits_ + num_digits_, it);
       it = std::fill_n(it, full_exp - num_digits_, static_cast<Char>('0'));
-      if (specs_.showpoint || specs_.precision < 0) {
+      if (specs_.showpoint) {
         *it++ = decimal_point_;
         int num_zeros = specs_.precision - full_exp;
         if (num_zeros <= 0) {
@@ -1165,12 +1291,8 @@ template <typename Char> class float_writer {
       // 1234e-2 -> 12.34[0+]
       it = copy_str<Char>(digits_, digits_ + full_exp, it);
       if (!specs_.showpoint) {
-        // Remove trailing zeros.
-        int num_digits = num_digits_;
-        while (num_digits > full_exp && digits_[num_digits - 1] == '0')
-          --num_digits;
-        if (num_digits != full_exp) *it++ = decimal_point_;
-        return copy_str<Char>(digits_ + full_exp, digits_ + num_digits, it);
+        if (num_digits_ != full_exp) *it++ = decimal_point_;
+        return copy_str<Char>(digits_ + full_exp, digits_ + num_digits_, it);
       }
       *it++ = decimal_point_;
       it = copy_str<Char>(digits_ + full_exp, digits_ + num_digits_, it);
@@ -1183,18 +1305,14 @@ template <typename Char> class float_writer {
       // 1234e-6 -> 0.001234
       *it++ = static_cast<Char>('0');
       int num_zeros = -full_exp;
-      int num_digits = num_digits_;
-      if (num_digits == 0 && specs_.precision >= 0 &&
+      if (num_digits_ == 0 && specs_.precision >= 0 &&
           specs_.precision < num_zeros) {
         num_zeros = specs_.precision;
       }
-      // Remove trailing zeros.
-      if (!specs_.showpoint)
-        while (num_digits > 0 && digits_[num_digits - 1] == '0') --num_digits;
-      if (num_zeros != 0 || num_digits != 0 || specs_.showpoint) {
+      if (num_zeros != 0 || num_digits_ != 0 || specs_.showpoint) {
         *it++ = decimal_point_;
         it = std::fill_n(it, num_zeros, static_cast<Char>('0'));
-        it = copy_str<Char>(digits_, digits_ + num_digits, it);
+        it = copy_str<Char>(digits_, digits_ + num_digits_, it);
       }
     }
     return it;
@@ -1236,6 +1354,72 @@ int snprintf_float(T value, int precision, float_specs specs,
 
 template <typename T> T promote_float(T value) { return value; }
 inline double promote_float(float value) { return static_cast<double>(value); }
+
+namespace dragonbox {
+
+// Type-specific information that Dragonbox uses.
+template <class T> struct float_info;
+
+template <> struct float_info<float> {
+  using carrier_uint = uint32_t;
+  static const int significand_bits = 23;
+  static const int exponent_bits = 8;
+  static const int min_exponent = -126;
+  static const int max_exponent = 127;
+  static const int exponent_bias = -127;
+  static const int decimal_digits = 9;
+  static const int kappa = 1;
+  static const int big_divisor = 100;
+  static const int small_divisor = 10;
+  static const int min_k = -31;
+  static const int max_k = 46;
+  static const int cache_bits = 64;
+  static const int divisibility_check_by_5_threshold = 39;
+  static const int case_fc_pm_half_lower_threshold = -1;
+  static const int case_fc_pm_half_upper_threshold = 6;
+  static const int case_fc_lower_threshold = -2;
+  static const int case_fc_upper_threshold = 6;
+  static const int case_shorter_interval_left_endpoint_lower_threshold = 2;
+  static const int case_shorter_interval_left_endpoint_upper_threshold = 3;
+  static const int shorter_interval_tie_lower_threshold = -35;
+  static const int shorter_interval_tie_upper_threshold = -35;
+  static const int max_trailing_zeros = 7;
+};
+
+template <> struct float_info<double> {
+  using carrier_uint = uint64_t;
+  static const int significand_bits = 52;
+  static const int exponent_bits = 11;
+  static const int min_exponent = -1022;
+  static const int max_exponent = 1023;
+  static const int exponent_bias = -1023;
+  static const int decimal_digits = 17;
+  static const int kappa = 2;
+  static const int big_divisor = 1000;
+  static const int small_divisor = 100;
+  static const int min_k = -292;
+  static const int max_k = 326;
+  static const int cache_bits = 128;
+  static const int divisibility_check_by_5_threshold = 86;
+  static const int case_fc_pm_half_lower_threshold = -2;
+  static const int case_fc_pm_half_upper_threshold = 9;
+  static const int case_fc_lower_threshold = -4;
+  static const int case_fc_upper_threshold = 9;
+  static const int case_shorter_interval_left_endpoint_lower_threshold = 2;
+  static const int case_shorter_interval_left_endpoint_upper_threshold = 3;
+  static const int shorter_interval_tie_lower_threshold = -77;
+  static const int shorter_interval_tie_upper_threshold = -77;
+  static const int max_trailing_zeros = 16;
+};
+
+template <typename T> struct decimal_fp {
+  using significand_type = typename float_info<T>::carrier_uint;
+  significand_type significand;
+  int exponent;
+};
+
+template <typename T> decimal_fp<T> to_decimal(T x) FMT_NOEXCEPT;
+}  // namespace dragonbox
 
 template <typename Handler>
 FMT_CONSTEXPR void handle_int_type_spec(char spec, Handler&& handler) {
@@ -1579,7 +1763,7 @@ template <typename OutputIt, typename Char, typename UInt> struct int_writer {
     int num_digits = count_digits(abs_value);
     int size = num_digits, n = num_digits;
     std::string::const_iterator group = groups.cbegin();
-    while (group != groups.cend() && num_digits > *group && *group > 0 &&
+    while (group != groups.cend() && n > *group && *group > 0 &&
            *group != max_value<char>()) {
       size += sep_size;
       n -= *group;
@@ -1589,8 +1773,9 @@ template <typename OutputIt, typename Char, typename UInt> struct int_writer {
     char digits[40];
     format_decimal(digits, abs_value, num_digits);
     basic_memory_buffer<Char> buffer;
-    size += prefix_size;
-    buffer.resize(size);
+    size += static_cast<int>(prefix_size);
+    const auto usize = to_unsigned(size);
+    buffer.resize(usize);
     basic_string_view<Char> s(&sep, sep_size);
     // Index of a decimal digit with the least significant digit having index 0.
     int digit_index = 0;
@@ -1610,7 +1795,10 @@ template <typename OutputIt, typename Char, typename UInt> struct int_writer {
                               make_checked(p, s.size()));
     }
     if (prefix_size != 0) p[-1] = static_cast<Char>('-');
-    write(out, basic_string_view<Char>(buffer.data(), buffer.size()), specs);
+    auto data = buffer.data();
+    out = write_padded<align::right>(
+        out, specs, usize, usize,
+        [=](iterator it) { return copy_str<Char>(data, data + size, it); });
   }
 
   void on_chr() { *out++ = static_cast<Char>(abs_value); }
@@ -1675,7 +1863,7 @@ OutputIt write(OutputIt out, T value, basic_format_specs<Char> specs,
       ++precision;
   }
   if (const_check(std::is_same<T, float>())) fspecs.binary32 = true;
-  fspecs.use_grisu = use_grisu<T>();
+  fspecs.use_grisu = is_fast_float<T>();
   int exp = format_float(promote_float(value), precision, fspecs, buffer);
   fspecs.precision = precision;
   Char point =
@@ -1685,8 +1873,9 @@ OutputIt write(OutputIt out, T value, basic_format_specs<Char> specs,
   return write_padded<align::right>(out, specs, w.size(), w);
 }
 
-template <typename Char, typename OutputIt, typename T,
-          FMT_ENABLE_IF(std::is_floating_point<T>::value)>
+template <
+    typename Char, typename OutputIt, typename T,
+    FMT_ENABLE_IF(std::is_floating_point<T>::value&& is_fast_float<T>::value)>
 OutputIt write(OutputIt out, T value) {
   if (const_check(!is_supported_floating_point(value))) return out;
   auto fspecs = float_specs();
@@ -1699,15 +1888,20 @@ OutputIt write(OutputIt out, T value) {
   if (!std::isfinite(value))
     return write_nonfinite(out, std::isinf(value), specs, fspecs);
 
-  memory_buffer buffer;
-  int precision = -1;
-  if (const_check(std::is_same<T, float>())) fspecs.binary32 = true;
-  fspecs.use_grisu = use_grisu<T>();
-  int exp = format_float(promote_float(value), precision, fspecs, buffer);
-  fspecs.precision = precision;
-  float_writer<Char> w(buffer.data(), static_cast<int>(buffer.size()), exp,
+  using type = conditional_t<std::is_same<T, long double>::value, double, T>;
+  auto dec = dragonbox::to_decimal(static_cast<type>(value));
+  memory_buffer buf;
+  write<char>(buffer_appender<char>(buf), dec.significand);
+  float_writer<Char> w(buf.data(), static_cast<int>(buf.size()), dec.exponent,
                        fspecs, static_cast<Char>('.'));
   return base_iterator(out, w(reserve(out, w.size())));
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(std::is_floating_point<T>::value &&
+                        !is_fast_float<T>::value)>
+inline OutputIt write(OutputIt out, T value) {
+  return write(out, value, basic_format_specs<Char>());
 }
 
 template <typename Char, typename OutputIt>
@@ -1777,7 +1971,13 @@ OutputIt write(OutputIt out, T value) {
   // Don't do -abs_value since it trips unsigned-integer-overflow sanitizer.
   if (negative) abs_value = ~abs_value + 1;
   int num_digits = count_digits(abs_value);
-  auto it = reserve(out, (negative ? 1 : 0) + static_cast<size_t>(num_digits));
+  auto size = (negative ? 1 : 0) + static_cast<size_t>(num_digits);
+  auto it = reserve(out, size);
+  if (auto ptr = to_pointer<Char>(it, size)) {
+    if (negative) *ptr++ = static_cast<Char>('-');
+    format_decimal<Char>(ptr, abs_value, num_digits);
+    return out;
+  }
   if (negative) *it++ = static_cast<Char>('-');
   it = format_decimal<Char>(it, abs_value, num_digits).end;
   return base_iterator(out, it);
@@ -1816,8 +2016,13 @@ auto write(OutputIt out, const T& value) -> typename std::enable_if<
     mapped_type_constant<T, basic_format_context<OutputIt, Char>>::value ==
         type::custom_type,
     OutputIt>::type {
-  basic_format_context<OutputIt, Char> ctx(out, {}, {});
-  return formatter<T>().format(value, ctx);
+  using context_type = basic_format_context<OutputIt, Char>;
+  using formatter_type =
+      conditional_t<has_formatter<T, context_type>::value,
+                    typename context_type::template formatter_type<T>,
+                    fallback_formatter<T, Char>>;
+  context_type ctx(out, {}, {});
+  return formatter_type().format(value, ctx);
 }
 
 // An argument visitor that formats the argument and writes it via the output
@@ -2466,7 +2671,7 @@ FMT_CONSTEXPR const Char* parse_align(const Char* begin, const Char* end,
   auto p = next_code_point(begin, end);
   if (p == end) p = begin;
   for (;;) {
-    switch (static_cast<char>(*p)) {
+    switch (static_cast<int>(*p)) {
     case '<':
       align = align::left;
       break;
@@ -2673,17 +2878,17 @@ FMT_CONSTEXPR_DECL FMT_INLINE void parse_format_string(
     return;
   }
   struct writer {
-    FMT_CONSTEXPR void operator()(const Char* begin, const Char* end) {
-      if (begin == end) return;
+    FMT_CONSTEXPR void operator()(const Char* pbegin, const Char* pend) {
+      if (pbegin == pend) return;
       for (;;) {
         const Char* p = nullptr;
-        if (!find<IS_CONSTEXPR>(begin, end, '}', p))
-          return handler_.on_text(begin, end);
+        if (!find<IS_CONSTEXPR>(pbegin, pend, '}', p))
+          return handler_.on_text(pbegin, pend);
         ++p;
-        if (p == end || *p != '}')
+        if (p == pend || *p != '}')
           return handler_.on_error("unmatched '}' in format string");
-        handler_.on_text(begin, p);
-        begin = p + 1;
+        handler_.on_text(pbegin, p);
+        pbegin = p + 1;
       }
     }
     Handler& handler_;
@@ -3311,9 +3516,15 @@ typename Context::iterator vformat_to(
   return h.context.out();
 }
 
-// Casts ``p`` to ``const void*`` for pointer formatting.
-// Example:
-//   auto s = format("{}", ptr(p));
+/**
+  \rst
+  Converts ``p`` to ``const void*`` for pointer formatting.
+
+  **Example**::
+
+    auto s = fmt::format("{}", fmt::ptr(p));
+  \endrst
+ */
 template <typename T> inline const void* ptr(const T* p) { return p; }
 template <typename T> inline const void* ptr(const std::unique_ptr<T>& p) {
   return p.get();
@@ -3332,6 +3543,10 @@ class bytes {
 };
 
 template <> struct formatter<bytes> {
+ private:
+  detail::dynamic_format_specs<char> specs_;
+
+ public:
   template <typename ParseContext>
   FMT_CONSTEXPR auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {
     using handler_type = detail::dynamic_specs_handler<ParseContext>;
@@ -3350,9 +3565,6 @@ template <> struct formatter<bytes> {
         specs_.precision, specs_.precision_ref, ctx);
     return detail::write_bytes(ctx.out(), b.data_, specs_);
   }
-
- private:
-  detail::dynamic_format_specs<char> specs_;
 };
 
 template <typename It, typename Sentinel, typename Char>
@@ -3417,15 +3629,14 @@ arg_join<It, Sentinel, wchar_t> join(It begin, Sentinel end, wstring_view sep) {
   \endrst
  */
 template <typename Range>
-arg_join<detail::iterator_t<const Range>, detail::sentinel_t<const Range>, char>
-join(const Range& range, string_view sep) {
+arg_join<detail::iterator_t<Range>, detail::sentinel_t<Range>, char> join(
+    Range&& range, string_view sep) {
   return join(std::begin(range), std::end(range), sep);
 }
 
 template <typename Range>
-arg_join<detail::iterator_t<const Range>, detail::sentinel_t<const Range>,
-         wchar_t>
-join(const Range& range, wstring_view sep) {
+arg_join<detail::iterator_t<Range>, detail::sentinel_t<Range>, wchar_t> join(
+    Range&& range, wstring_view sep) {
   return join(std::begin(range), std::end(range), sep);
 }
 
@@ -3452,7 +3663,7 @@ inline std::string to_string(T value) {
   // The buffer should be large enough to store the number including the sign or
   // "false" for bool.
   constexpr int max_size = detail::digits10<T>() + 2;
-  char buffer[max_size > 5 ? max_size : 5];
+  char buffer[max_size > 5 ? static_cast<unsigned>(max_size) : 5];
   char* begin = buffer;
   return std::string(begin, detail::write<char>(begin, value));
 }
@@ -3476,8 +3687,7 @@ detail::buffer_appender<Char> detail::vformat_to(
     detail::buffer<Char>& buf, basic_string_view<Char> format_str,
     basic_format_args<buffer_context<type_identity_t<Char>>> args) {
   using af = arg_formatter<typename buffer_context<Char>::iterator, Char>;
-  return vformat_to<af>(buffer_appender<Char>(buf), to_string_view(format_str),
-                        args);
+  return vformat_to<af>(buffer_appender<Char>(buf), format_str, args);
 }
 
 #ifndef FMT_HEADER_ONLY
@@ -3519,10 +3729,8 @@ template <typename S, typename... Args, size_t SIZE = inline_buffer_size,
           typename Char = enable_if_t<detail::is_string<S>::value, char_t<S>>>
 inline typename buffer_context<Char>::iterator format_to(
     basic_memory_buffer<Char, SIZE>& buf, const S& format_str, Args&&... args) {
-  detail::check_format_string<Args...>(format_str);
-  using context = buffer_context<Char>;
-  return detail::vformat_to(buf, to_string_view(format_str),
-                            make_format_args<context>(args...));
+  const auto& vargs = fmt::make_args_checked<Args...>(format_str, args...);
+  return detail::vformat_to(buf, to_string_view(format_str), vargs);
 }
 
 template <typename OutputIt, typename Char = char>
@@ -3531,88 +3739,17 @@ using format_context_t = basic_format_context<OutputIt, Char>;
 template <typename OutputIt, typename Char = char>
 using format_args_t = basic_format_args<format_context_t<OutputIt, Char>>;
 
-template <
-    typename S, typename OutputIt, typename... Args,
-    FMT_ENABLE_IF(detail::is_output_iterator<OutputIt>::value &&
-                  !detail::is_contiguous_back_insert_iterator<OutputIt>::value)>
-inline OutputIt vformat_to(
-    OutputIt out, const S& format_str,
-    format_args_t<type_identity_t<OutputIt>, char_t<S>> args) {
-  using af = detail::arg_formatter<OutputIt, char_t<S>>;
-  return vformat_to<af>(out, to_string_view(format_str), args);
-}
-
-/**
- \rst
- Formats arguments, writes the result to the output iterator ``out`` and returns
- the iterator past the end of the output range.
-
- **Example**::
-
-   std::vector<char> out;
-   fmt::format_to(std::back_inserter(out), "{}", 42);
- \endrst
- */
-template <typename OutputIt, typename S, typename... Args,
-          FMT_ENABLE_IF(
-              detail::is_output_iterator<OutputIt>::value &&
-              !detail::is_contiguous_back_insert_iterator<OutputIt>::value &&
-              detail::is_string<S>::value)>
-inline OutputIt format_to(OutputIt out, const S& format_str, Args&&... args) {
-  detail::check_format_string<Args...>(format_str);
-  using context = format_context_t<OutputIt, char_t<S>>;
-  return vformat_to(out, to_string_view(format_str),
-                    make_format_args<context>(args...));
-}
-
-template <typename OutputIt> struct format_to_n_result {
-  /** Iterator past the end of the output range. */
-  OutputIt out;
-  /** Total (not truncated) output size. */
-  size_t size;
-};
+template <typename OutputIt, typename Char = typename OutputIt::value_type>
+using format_to_n_context FMT_DEPRECATED_ALIAS = buffer_context<Char>;
 
 template <typename OutputIt, typename Char = typename OutputIt::value_type>
-using format_to_n_context =
-    format_context_t<detail::truncating_iterator<OutputIt>, Char>;
-
-template <typename OutputIt, typename Char = typename OutputIt::value_type>
-using format_to_n_args = basic_format_args<format_to_n_context<OutputIt, Char>>;
+using format_to_n_args FMT_DEPRECATED_ALIAS =
+    basic_format_args<buffer_context<Char>>;
 
 template <typename OutputIt, typename Char, typename... Args>
-inline format_arg_store<format_to_n_context<OutputIt, Char>, Args...>
+FMT_DEPRECATED format_arg_store<buffer_context<Char>, Args...>
 make_format_to_n_args(const Args&... args) {
-  return format_arg_store<format_to_n_context<OutputIt, Char>, Args...>(
-      args...);
-}
-
-template <typename OutputIt, typename Char, typename... Args,
-          FMT_ENABLE_IF(detail::is_output_iterator<OutputIt>::value)>
-inline format_to_n_result<OutputIt> vformat_to_n(
-    OutputIt out, size_t n, basic_string_view<Char> format_str,
-    format_to_n_args<type_identity_t<OutputIt>, type_identity_t<Char>> args) {
-  auto it = vformat_to(detail::truncating_iterator<OutputIt>(out, n),
-                       format_str, args);
-  return {it.base(), it.count()};
-}
-
-/**
- \rst
- Formats arguments, writes up to ``n`` characters of the result to the output
- iterator ``out`` and returns the total output size and the iterator past the
- end of the output range.
- \endrst
- */
-template <typename OutputIt, typename S, typename... Args,
-          FMT_ENABLE_IF(detail::is_string<S>::value&&
-                            detail::is_output_iterator<OutputIt>::value)>
-inline format_to_n_result<OutputIt> format_to_n(OutputIt out, size_t n,
-                                                const S& format_str,
-                                                const Args&... args) {
-  detail::check_format_string<Args...>(format_str);
-  using context = format_to_n_context<OutputIt, char_t<S>>;
-  return vformat_to_n(out, n, to_string_view(format_str),
-                      make_format_args<context>(args...));
+  return format_arg_store<buffer_context<Char>, Args...>(args...);
 }
 
 template <typename Char, enable_if_t<(!std::is_same<Char, char>::value), int>>
@@ -3622,15 +3759,6 @@ std::basic_string<Char> detail::vformat(
   basic_memory_buffer<Char> buffer;
   detail::vformat_to(buffer, format_str, args);
   return to_string(buffer);
-}
-
-/**
-  Returns the number of characters in the output of
-  ``format(format_str, args...)``.
- */
-template <typename... Args>
-inline size_t formatted_size(string_view format_str, const Args&... args) {
-  return format_to(detail::counting_iterator(), format_str, args...).count();
 }
 
 template <typename Char, FMT_ENABLE_IF(std::is_same<Char, wchar_t>::value)>
@@ -3657,8 +3785,7 @@ template <typename Char, Char... CHARS> class udl_formatter {
   template <typename... Args>
   std::basic_string<Char> operator()(Args&&... args) const {
     static FMT_CONSTEXPR_DECL Char s[] = {CHARS..., '\0'};
-    check_format_string<remove_cvref_t<Args>...>(FMT_STRING(s));
-    return format(s, std::forward<Args>(args)...);
+    return format(FMT_STRING(s), std::forward<Args>(args)...);
   }
 };
 #  else

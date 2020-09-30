@@ -287,6 +287,12 @@ TEST(BufferedFileTest, Fileno) {
   EXPECT_READ(copy, FILE_CONTENT);
 }
 
+TEST(OStreamTest, Move) {
+  fmt::ostream out = fmt::output_file("test-file");
+  fmt::ostream moved(std::move(out));
+  moved.print("hello");
+}
+
 TEST(OStreamTest, Print) {
   fmt::ostream out = fmt::output_file("test-file");
   out.print("The answer is {}.\n", 42);
@@ -303,6 +309,14 @@ TEST(OStreamTest, BufferBoundary) {
   out.close();
   file in("test-file", file::RDONLY);
   EXPECT_READ(in, str + str);
+}
+
+TEST(OStreamTest, BufferSize) {
+  fmt::ostream out = fmt::output_file("test-file", fmt::buffer_size=1);
+  out.print("{}", "foo");
+  out.close();
+  file in("test-file", file::RDONLY);
+  EXPECT_READ(in, "foo");
 }
 
 TEST(FileTest, DefaultCtor) {
